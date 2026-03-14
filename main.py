@@ -201,12 +201,12 @@ def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
             seen_coins.add(coin)
 
             c = ctxs[i] if i < len(ctxs) else {}
-            day_ntl = safe_float(c.get("dayNtlVlm", 0.0), 0.0)
+            # day_ntl = safe_float(c.get("dayNtlVlm", 0.0), 0.0)
             mid = safe_float(c.get("midPx", 0.0), 0.0)
             impact = c.get("impactPxs") or [None, None]
             buy_imp = safe_float(impact[0], mid) if len(impact) > 0 else mid
             sell_imp = safe_float(impact[1], mid) if len(impact) > 1 else mid
-            spread_pct = (abs(sell_imp - buy_imp) / mid * 100.0) if mid > 0 else 999.0
+            # spread_pct = (abs(sell_imp - buy_imp) / mid * 100.0) if mid > 0 else 999.0
 
             # Score berekenen op basis van liquidity & spread
             score = math.log1p(day_ntl) / (1.0 + 0.6 * spread_pct)
