@@ -266,7 +266,7 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
         return None
 
     adx_strong = adx > ADX_TREND_THR
-    adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX
+    adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX and adx_slope > 0
 
     rsi_long = rsi > 55
     rsi_short = rsi < 45
@@ -289,8 +289,12 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
         return None
 
     # --- MOMENTUM CANDLE & PHASE ---
-    adx_prev = df.iloc[-2]["ADX_14"]
-    rsi_prev = df.iloc[-2]["RSI_14"]
+    if len(df) < 2:  # als er minder dan 2 candles zijn
+        adx_prev = adx
+        rsi_prev = rsi
+    else:
+        adx_prev = df.iloc[-2]["ADX_14"]
+        rsi_prev = df.iloc[-2]["RSI_14"]
     adx_slope = adx - adx_prev
     rsi_slope = rsi - rsi_prev
     ema_sep = abs(last["EMA_9"] - last["EMA_21"]) / close
