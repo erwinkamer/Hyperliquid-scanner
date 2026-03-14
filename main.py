@@ -108,7 +108,20 @@ def send_telegram_message(msg: str) -> None:
 # HELPERS
 # =========================
 def tv_link_for_coin(coin: str) -> str:
-    return f"{TV_PREFIX}{coin}USD"
+    """
+    Geeft de juiste TradingView-link voor een coin of asset.
+    - Crypto (alfanumeriek, meestal 2-5 letters) → TV_PREFIX + USD
+    - Commodities, indices of andere symbolen → direct via hun symbol
+    """
+    coin_clean = coin.upper().replace("CRYPTO:", "").strip()
+
+    # Crypto-symbool check: kort en alleen letters/nummers
+    if coin_clean.isalnum() and 2 <= len(coin_clean) <= 5:
+        return f"{TV_PREFIX}{coin_clean}USD"
+    
+    # Anders: commodity, index, etc.
+    # Sommige assets hebben speciale TradingView-prefixes, maar dit opent het algemene chart
+    return f"https://www.tradingview.com/chart/?symbol={coin_clean}"
 
 def regime_from_adx(adx: float) -> str:
     if adx > ADX_TREND_THR:
