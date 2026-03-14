@@ -187,30 +187,32 @@ def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
                 continue
             
             # Filter: enkel crypto
-            asset_type = asset.get("type", "").upper()  # of asset.get("assetType", "").upper()
             coin = asset.get("name")
+            asset_type = asset.get("type", "").upper()
+
             if not coin or coin in seen_coins:
                 continue
-            if asset_type != "CRYPTO" and not coin.startswith("CRYPTO:"):
-                continue  # skip niet-crypto
+
+            # ✅ Neem alles wat relevant is voor crypto perpetual universe
+            # Dit dekt CRYPTO, PERP en coins met prefix CRYPTO:
+            if asset_type not in ["CRYPTO", "PERP"] and not coin.upper().startswith("CRYPTO:"):
+                continue
 
             seen_coins.add(coin)
 
             c = ctxs[i] if i < len(ctxs) else {}
             day_ntl = safe_float(c.get("dayNtlVlm", 0.0), 0.0)
-            if day_ntl < MIN_DAY_NTL_VLM:
-                continue
-
             mid = safe_float(c.get("midPx", 0.0), 0.0)
             impact = c.get("impactPxs") or [None, None]
             buy_imp = safe_float(impact[0], mid) if len(impact) > 0 else mid
             sell_imp = safe_float(impact[1], mid) if len(impact) > 1 else mid
             spread_pct = (abs(sell_imp - buy_imp) / mid * 100.0) if mid > 0 else 999.0
-            if spread_pct > MAX_IMPACT_SPREAD_PCT:
-                continue
 
+            # Score berekenen op basis van liquidity & spread
             score = math.log1p(day_ntl) / (1.0 + 0.6 * spread_pct)
             rows.append((coin, score, day_ntl, spread_pct))
+
+            # Pas filters later toe bij ranking/top selection (TOP_N)
     
     rows.sort(key=lambda x: x[1], reverse=True)
     return rows[:top_n]
