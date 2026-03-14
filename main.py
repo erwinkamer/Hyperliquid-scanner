@@ -150,70 +150,51 @@ def get_meta_and_ctxs_cached() -> Any:
 
 def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
     """
-    Haalt de TOP_N beste crypto perpetual contracts op van alle beschikbare DEXes.
-    Alleen crypto assets worden meegenomen (filter op asset type of prefix).
+    Haalt de TOP_N beste crypto perpetual contracts op van het volledige Hyperliquid perp universe.
+    Alleen crypto assets worden meegenomen (filter op type of prefix).
     """
     try:
-        dexs_res = hl_info({"type": "perpDexs"}, weight=weight_info_default())
+        res = hl_info({"type": "metaAndAssetCtxs"}, weight=weight_info_default())
     except Exception:
-        dexs_res = []
-        
-    dex_list = [""]
-    if isinstance(dexs_res, list) and len(dexs_res) > 1:
-        for entry in dexs_res[1:]:
-            if isinstance(entry, dict) and "name" in entry:
-                dex_list.append(entry["name"])
-    
+        return []
+
+    if not (isinstance(res, list) and len(res) >= 2):
+        return []
+
+    meta = res[0] if isinstance(res[0], dict) else {}
+    ctxs = res[1] if isinstance(res[1], list) else []
+    universe = meta.get("universe", []) if isinstance(meta, dict) else []
+
     rows: List[Tuple[str, float, float, float]] = []
     seen_coins = set()
-    
-    for dex in dex_list:
-        payload = {"type": "metaAndAssetCtxs"}
-        if dex:
-            payload["dex"] = dex
-        try:
-            res = hl_info(payload, weight=weight_info_default())
-        except Exception:
-            continue
-        if not (isinstance(res, list) and len(res) >= 2):
+
+    for i, asset in enumerate(universe):
+        if not isinstance(asset, dict):
             continue
 
-        meta = res[0] if isinstance(res[0], dict) else {}
-        ctxs = res[1] if isinstance(res[1], list) else []
-        universe = meta.get("universe", []) if isinstance(meta, dict) else []
+        coin = asset.get("name")
+        asset_type = asset.get("type", "").upper()
+        if not coin or coin in seen_coins:
+            continue
 
-        for i, asset in enumerate(universe):
-            if not isinstance(asset, dict):
-                continue
-            
-            # Filter: enkel crypto
-            coin = asset.get("name")
-            asset_type = asset.get("type", "").upper()
+        # Alleen relevante crypto/perp assets
+        if asset_type not in ["CRYPTO", "PERP"] and not coin.upper().startswith("CRYPTO:"):
+            continue
 
-            if not coin or coin in seen_coins:
-                continue
+        seen_coins.add(coin)
 
-            # ✅ Neem alles wat relevant is voor crypto perpetual universe
-            # Dit dekt CRYPTO, PERP en coins met prefix CRYPTO:
-            if asset_type not in ["CRYPTO", "PERP"] and not coin.upper().startswith("CRYPTO:"):
-                continue
+        c = ctxs[i] if i < len(ctxs) else {}
+        day_ntl = safe_float(c.get("dayNtlVlm", 0.0), 0.0)
+        mid = safe_float(c.get("midPx", 0.0), 0.0)
+        impact = c.get("impactPxs") or [None, None]
+        buy_imp = safe_float(impact[0], mid) if len(impact) > 0 else mid
+        sell_imp = safe_float(impact[1], mid) if len(impact) > 1 else mid
+        spread_pct = (abs(sell_imp - buy_imp) / mid * 100.0) if mid > 0 else 999.0
 
-            seen_coins.add(coin)
+        # Score: liquidity + spread
+        score = math.log1p(day_ntl) / (1.0 + 0.6 * spread_pct)
+        rows.append((coin, score, day_ntl, spread_pct))
 
-            c = ctxs[i] if i < len(ctxs) else {}
-            # day_ntl = safe_float(c.get("dayNtlVlm", 0.0), 0.0)
-            mid = safe_float(c.get("midPx", 0.0), 0.0)
-            impact = c.get("impactPxs") or [None, None]
-            buy_imp = safe_float(impact[0], mid) if len(impact) > 0 else mid
-            sell_imp = safe_float(impact[1], mid) if len(impact) > 1 else mid
-            # spread_pct = (abs(sell_imp - buy_imp) / mid * 100.0) if mid > 0 else 999.0
-
-            # Score berekenen op basis van liquidity & spread
-            score = math.log1p(day_ntl) / (1.0 + 0.6 * spread_pct)
-            rows.append((coin, score, day_ntl, spread_pct))
-
-            # Pas filters later toe bij ranking/top selection (TOP_N)
-    
     rows.sort(key=lambda x: x[1], reverse=True)
     return rows[:top_n]
 
