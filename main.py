@@ -248,7 +248,12 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     df["ATR_14"] = ta.volatility.average_true_range(df["high"], df["low"], df["close"], window=14)
     df["ATRp_14"] = (df["ATR_14"] / df["close"]) * 100.0
 
+    # NEW: volume baseline
+    df["VOL_MA20"] = df["vol"].rolling(20).mean()
+
     last = df.iloc[-1]
+    prev = df.iloc[-2]
+
     if any(pd.isna(last[k]) for k in ["EMA_9", "EMA_21", "RSI_14", "ADX_14", "ATRp_14"]):
         return None
 
@@ -260,17 +265,19 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     atrp = float(last["ATRp_14"])
     close = float(last["close"])
 
-    # ATR VOLATILITY FILTER
+    # ATR VOLATILITY FILTER (unchanged)
     if atrp < 0.7 or atrp > 6.0:
         return None
 
-    if len(df) < 2:
-        adx_prev = adx
-        rsi_prev = rsi
-    else:
-        adx_prev = df.iloc[-2]["ADX_14"]
-        rsi_prev = df.iloc[-2]["RSI_14"]
+    adx_prev = float(prev["ADX_14"])
+    rsi_prev = float(prev["RSI_14"])
+
     adx_slope = adx - adx_prev
+    rsi_slope = rsi - rsi_prev
+
+    # NEW: allow small RSI pullbacks
+    if rsi_slope < -0.2:
+        return None
 
     adx_strong = adx > ADX_TREND_THR
     adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX and adx_slope > 0
@@ -281,11 +288,13 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     rsi_near_short = 45 <= rsi < 50
 
     signal = None
+
     if adx_strong:
         if ema_bull and rsi_long:
             signal = "LONG"
         elif ema_bear and rsi_short:
             signal = "SHORT"
+
     elif adx_rising:
         if ema_bull and rsi_near_long:
             signal = "PRE-LONG"
@@ -295,18 +304,39 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     if not signal:
         return None
 
-    # MOMENTUM CANDLE & PHASE
-    ema_sep = abs(last["EMA_9"] - last["EMA_21"]) / close
+    # MOMENTUM CANDLE
+    ema_sep_raw = abs(last["EMA_9"] - last["EMA_21"])
+    ema_sep = ema_sep_raw / close
+
     body = abs(last["close"] - last["open"])
     avg_body = (df["close"] - df["open"]).abs().tail(10).mean()
+
     range_size = last["high"] - last["low"]
     avg_range = (df["high"] - df["low"]).tail(10).mean()
+
     momentum_candle = body > avg_body * 1.2 and range_size > avg_range * 1.1
 
+    candle_range = last["high"] - last["low"]
+
+    upper_wick = last["high"] - max(last["open"], last["close"])
+    lower_wick = min(last["open"], last["close"]) - last["low"]
+
+    wick_ratio = (upper_wick + lower_wick) / candle_range if candle_range > 0 else 0
+
+    if wick_ratio > 0.9 and signal in ("LONG","SHORT"):
+        return None
+    
+    # NEW: ATR normalized separation
+    atr = float(last["ATR_14"])
+    ema_sep_norm = ema_sep_raw / atr if atr > 0 else ema_sep
+
+    # PHASE
     phase = "MID"
-    if adx > 25 and adx_slope > 0 and ema_sep < 0.012:
+
+    if adx > 25 and adx_slope > 0 and ema_sep_norm < 0.6:
         phase = "EARLY"
-    elif adx > 35 and (rsi > 70 or rsi < 30 or ema_sep > 0.025):
+
+    elif adx > 35 and (rsi > 70 or rsi < 30 or ema_sep_norm > 1.2):
         phase = "LATE"
 
     # RANKING SCORE
@@ -316,10 +346,30 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
         rsi_dist = max(0.0, 50.0 - rsi)
 
     pre_penalty = -2.0 if "PRE" in signal else 0.0
-    score = float((adx * 1.0) + (rsi_dist * 0.6) + (ema_sep * 500.0) + pre_penalty)
-    if momentum_candle: score += 2.5
-    if phase == "EARLY": score += 3
-    if phase == "LATE": score -= 4
+
+    # ADX weight slightly reduced
+    score = float((adx * 0.8) + (rsi_dist * 0.6) + (ema_sep * 500.0) + pre_penalty)
+
+    if momentum_candle:
+        score += 2.5
+
+    if phase == "EARLY":
+        score += 3
+
+    if phase == "LATE":
+        score -= 4
+
+    # NEW: volume score bonus
+    vol = float(last["vol"])
+    vol_ma = float(last["VOL_MA20"]) if not pd.isna(last["VOL_MA20"]) else 0
+
+    if vol_ma > 0:
+        vol_ratio = vol / vol_ma
+
+        if vol_ratio > 1.8:
+            score += 2.5
+        elif vol_ratio > 1.4:
+            score += 1.2
 
     return (signal, adx, rsi, atrp, score, phase)
 
