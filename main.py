@@ -1,11 +1,6 @@
 # main.py — Hyperliquid 1H scanner -> Telegram shortlist -> TradingView (manual trading)
-# Improvements:
-# - Rate-limit safe (HL: 1200 weight/min; most info endpoints weight 20; candleSnapshot extra per 60 items)  :contentReference[oaicite:2]{index=2}
-# - TTL caching for meta/universe
-# - Liquidity/impact filtering (dayNtlVlm + impact spread proxy)
-# - Optional CHOP filter (skip entries in chop)
-# - Clear PRE vs ENTRY messaging
-# - Score only used for ranking (does not change signal logic)
+# Upgrades: Momentum phase + momentum candle scoring
+# All other logic unchanged.
 
 import os
 import time
@@ -36,53 +31,37 @@ PORT = int(os.getenv("PORT", "8080"))
 API_BASE = "https://api.hyperliquid.xyz"
 HEADERS = {"Content-Type": "application/json"}
 
-# Strategy timeframe
-INTERVAL = os.getenv("CANDLE_INTERVAL", "1h")  # supported intervals include "1h" :contentReference[oaicite:3]{index=3}
-
-# Candles needed:
-# - Strategy uses EMA(9/21), RSI(14), ADX(14) -> needs warmup; fetch ~70 bars is enough.
-LOOKBACK = int(os.getenv("SIGNAL_LOOKBACK", "70"))  # total candles requested from HL
-# IMPORTANT: candleSnapshot returns by time range; we'll request a range sized ~LOOKBACK candles.
-
-# Universe selection
-TOP_N = int(os.getenv("TOP_N", "60"))  # IMPORTANT: 60 is the safe default under 1200 weight/min :contentReference[oaicite:4]{index=4}
+INTERVAL = os.getenv("CANDLE_INTERVAL", "1h")
+LOOKBACK = int(os.getenv("SIGNAL_LOOKBACK", "70"))
+TOP_N = int(os.getenv("TOP_N", "60"))
 MAX_RESULTS_IN_TELEGRAM = int(os.getenv("TOP_K_TELEGRAM", "10"))
 
-# Filters (free, based on metaAndAssetCtxs)
-MIN_DAY_NTL_VLM = float(os.getenv("MIN_DAY_NTL_VLM", "1000000"))  # $1m notional/day default
-MAX_IMPACT_SPREAD_PCT = float(os.getenv("MAX_IMPACT_SPREAD_PCT", "0.80"))  # % (proxy slippage)
-FILTER_CHOP_ENTRIES = os.getenv("FILTER_CHOP_ENTRIES", "1").strip() == "1"  # skip ENTRY trades in chop (recommended)
+MIN_DAY_NTL_VLM = float(os.getenv("MIN_DAY_NTL_VLM", "1000000"))
+MAX_IMPACT_SPREAD_PCT = float(os.getenv("MAX_IMPACT_SPREAD_PCT", "0.80"))
+FILTER_CHOP_ENTRIES = os.getenv("FILTER_CHOP_ENTRIES", "1").strip() == "1"
 
-# ADX regime thresholds (must match TradingView)
 ADX_TREND_THR = float(os.getenv("ADX_TREND_THR", "25"))
 ADX_CHOP_THR = float(os.getenv("ADX_CHOP_THR", "20"))
 
-# PRE thresholds (match your original logic)
 ADX_PRE_MIN = float(os.getenv("ADX_PRE_MIN", "22"))
 ADX_PRE_MAX = float(os.getenv("ADX_PRE_MAX", "25"))
 
-# Simple safety against spam / rate-limit
 MIN_SECONDS_BETWEEN_SCANS = int(os.getenv("MIN_SECONDS_BETWEEN_SCANS", "30"))
-
-# Caching
 META_TTL_SEC = int(os.getenv("META_TTL_SEC", "60"))
 
-# TradingView link (no mapping; generic CRYPTO feed)
 TV_PREFIX = os.getenv("TV_PREFIX", "https://www.tradingview.com/chart/?symbol=CRYPTO:")
 
 # =========================
-# HL RATE LIMIT (weight-based)
+# HL RATE LIMIT
 # =========================
-# HL docs: REST requests share aggregated weight limit of 1200 per minute/IP.
-# Most info endpoints weight 20; candleSnapshot has extra per 60 items. :contentReference[oaicite:5]{index=5}
 @dataclass
 class RateLimiter:
-    max_weight_per_min: int = 1100  # keep headroom below 1200
+    max_weight_per_min: int = 1100
     window_sec: int = 60
 
     def __post_init__(self):
         self._lock = threading.Lock()
-        self._events = deque()  # (ts, weight)
+        self._events = deque()
 
     def _prune(self, now: float):
         cutoff = now - self.window_sec
@@ -98,7 +77,6 @@ class RateLimiter:
                 if used + weight <= self.max_weight_per_min:
                     self._events.append((now, weight))
                     return
-                # need to wait until some weight expires
                 oldest_ts = self._events[0][0] if self._events else now
                 sleep_for = max(0.05, (oldest_ts + self.window_sec) - now)
             time.sleep(min(sleep_for, 2.0))
@@ -106,11 +84,9 @@ class RateLimiter:
 RL = RateLimiter()
 
 def weight_info_default() -> int:
-    # "All other documented info requests have weight 20" :contentReference[oaicite:6]{index=6}
     return 20
 
 def weight_candle_snapshot(approx_items: int) -> int:
-    # base 20 + extra per 60 items returned :contentReference[oaicite:7]{index=7}
     extra = approx_items // 60
     return 20 + extra
 
@@ -132,8 +108,6 @@ def send_telegram_message(msg: str) -> None:
 # HELPERS
 # =========================
 def tv_link_for_coin(coin: str) -> str:
-    # generic; TradingView decides which exchange feed to show
-    # you can change TV_PREFIX to your preferred template
     return f"{TV_PREFIX}{coin}USD"
 
 def regime_from_adx(adx: float) -> str:
@@ -175,10 +149,6 @@ def get_meta_and_ctxs_cached() -> Any:
     return data
 
 def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
-    """
-    Returns list of (coin, activity_score, dayNtlVlm, impact_spread_pct) sorted desc by score.
-    Uses metaAndAssetCtxs -> universe + assetCtxs (dayNtlVlm, midPx, impactPxs).
-    """
     res = get_meta_and_ctxs_cached()
     if not (isinstance(res, list) and len(res) >= 2):
         return []
@@ -207,13 +177,11 @@ def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
             sell_imp = safe_float(impact[1], mid)
             spread_pct = abs(sell_imp - buy_imp) / mid * 100.0
 
-        # Filters
         if day_ntl < MIN_DAY_NTL_VLM:
             continue
         if spread_pct > MAX_IMPACT_SPREAD_PCT:
             continue
 
-        # Score: volume heavy, penalize spread
         activity_score = math.log1p(day_ntl) / (1.0 + 0.6 * spread_pct)
         rows.append((coin, activity_score, day_ntl, spread_pct))
 
@@ -229,9 +197,7 @@ def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
     retry=retry_if_exception_type((requests.RequestException,)),
 )
 def get_ohlcv(coin: str, lookback: int) -> Optional[pd.DataFrame]:
-    # candleSnapshot expects (coin, interval, startTime, endTime) :contentReference[oaicite:8]{index=8}
     end_ts = int(time.time() * 1000)
-    # request roughly lookback candles (1h each)
     start_ts = end_ts - int(lookback * 3600 * 1000)
 
     payload = {
@@ -239,7 +205,6 @@ def get_ohlcv(coin: str, lookback: int) -> Optional[pd.DataFrame]:
         "req": {"coin": coin, "interval": INTERVAL, "startTime": start_ts, "endTime": end_ts},
     }
 
-    # Assume response items ~lookback (or less), use that for weight estimation
     w = weight_candle_snapshot(approx_items=lookback)
     data = hl_info(payload, weight=w)
 
@@ -250,7 +215,6 @@ def get_ohlcv(coin: str, lookback: int) -> Optional[pd.DataFrame]:
     for x in data:
         if not isinstance(x, dict):
             continue
-        # HL candle fields: t (open time), T (close time), o/h/l/c/v strings :contentReference[oaicite:9]{index=9}
         t = safe_float(x.get("t"))
         o = safe_float(x.get("o"))
         h = safe_float(x.get("h"))
@@ -266,19 +230,14 @@ def get_ohlcv(coin: str, lookback: int) -> Optional[pd.DataFrame]:
 
     df = pd.DataFrame(rows, columns=["ts", "open", "high", "low", "close", "vol"])
     df = df.sort_values("ts").reset_index(drop=True)
-    # keep last N
     if len(df) > lookback:
         df = df.iloc[-lookback:].reset_index(drop=True)
     return df
 
 # =========================
-# SIGNALS (same strategy, improved reporting)
+# SIGNALS + MOMENTUM PHASE
 # =========================
-def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, float]]:
-    """
-    Returns (signal, adx, rsi, atrp, score)
-    signal in {LONG, SHORT, PRE-LONG, PRE-SHORT}
-    """
+def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, float, str]]:
     if df is None or len(df) < 35:
         return None
 
@@ -324,14 +283,30 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     if not signal:
         return None
 
-    # Ranking score (does not change signal; only sorts output)
-    ema_sep = abs(float(last["EMA_9"]) - float(last["EMA_21"])) / close if close > 0 else 0.0
+    # --- MOMENTUM CANDLE & PHASE ---
+    adx_prev = df.iloc[-2]["ADX_14"]
+    rsi_prev = df.iloc[-2]["RSI_14"]
+    adx_slope = adx - adx_prev
+    rsi_slope = rsi - rsi_prev
+    ema_sep = abs(last["EMA_9"] - last["EMA_21"]) / close
+
+    body = abs(last["close"] - last["open"])
+    avg_body = (df["close"] - df["open"]).abs().tail(10).mean()
+    momentum_candle = body > avg_body * 1.2
+
+    # Momentum phase
+    phase = "MID"
+    if adx_slope > 0 and ema_sep < 0.012:
+        phase = "EARLY"
+    elif adx_slope < 0 or ema_sep > 0.02 or rsi > 70 or rsi < 30:
+        phase = "LATE"
+
+    # Ranking score
     if "LONG" in signal:
         rsi_dist = max(0.0, rsi - 50.0)
     else:
         rsi_dist = max(0.0, 50.0 - rsi)
 
-    # prefer "reasonable" volatility window, penalize extremes
     atr_bonus = 0.0
     if 0.8 <= atrp <= 3.5:
         atr_bonus = 1.0
@@ -343,7 +318,14 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     pre_penalty = -2.0 if "PRE" in signal else 0.0
     score = float((adx * 1.0) + (rsi_dist * 0.6) + (ema_sep * 500.0) + (atr_bonus * 3.0) + pre_penalty)
 
-    return (signal, adx, rsi, atrp, score)
+    if momentum_candle:
+        score += 2.5
+    if phase == "EARLY":
+        score += 3
+    if phase == "LATE":
+        score -= 4
+
+    return (signal, adx, rsi, atrp, score, phase)
 
 def size_hint(score: float) -> str:
     if score >= 40:
@@ -367,15 +349,11 @@ def scan_and_notify():
     _last_scan_ts = now
 
     t0 = time.time()
-
-    # Universe selection (cached meta)
     top = select_topn_filtered(TOP_N)
     if not top:
         send_telegram_message("❌ Geen coins gevonden (filters te streng of API issue).")
         return
 
-    # Scan sequentially (safest under weight limits).
-    # If you want faster, lower TOP_N or loosen filters—otherwise you risk 429. :contentReference[oaicite:10]{index=10}
     found = []
     scanned = 0
     no_data = 0
@@ -398,18 +376,16 @@ def scan_and_notify():
             no_signal += 1
             continue
 
-        signal, adx, rsi, atrp, score = res
+        signal, adx, rsi, atrp, score, phase = res
         regime = regime_from_adx(adx)
 
-        # Optional improvement: skip ENTRY trades in CHOP regime (keeps strategy signals but reduces bad candidates)
         if FILTER_CHOP_ENTRIES and regime == "CHOP" and signal in ("LONG", "SHORT"):
             no_signal += 1
             continue
 
-        found.append((coin, signal, adx, rsi, atrp, score, regime, day_ntl, spread_pct))
+        found.append((coin, signal, adx, rsi, atrp, score, regime, phase, day_ntl, spread_pct))
 
     dt = time.time() - t0
-
     send_telegram_message(
         f"⚙️ Debug: gescand={scanned} | signals={len(found)} | no_signal={no_signal} | no_data={no_data} | {dt:.1f}s\n"
         f"Filters: dayNtlVlm>={MIN_DAY_NTL_VLM:.0f} | impactSpread<={MAX_IMPACT_SPREAD_PCT:.2f}% | TOP_N={TOP_N}"
@@ -424,7 +400,7 @@ def scan_and_notify():
 
     msg = "📊 Beste kansen (1H) — Hyperliquid\nKlik link → check chart (manual)\n\n"
 
-    for coin, signal, adx, rsi, atrp, score, regime, day_ntl, spread_pct in topk:
+    for coin, signal, adx, rsi, atrp, score, regime, phase, day_ntl, spread_pct in topk:
         tv = tv_link_for_coin(coin)
         hint = size_hint(score)
 
@@ -432,6 +408,7 @@ def scan_and_notify():
             msg += (
                 f"🟡 ⚠️ PRE — {coin}\n"
                 f"Regime: {regime}\n"
+                f"Momentum phase: {phase}\n"
                 f"ADX: {adx:.1f} | RSI: {rsi:.1f} | ATR%: {atrp:.2f} | Score: {score:.1f}\n"
                 f"Dit is een VOOR-signaal (kijken, niet blind traden)\n"
                 f"Liquidity: dayNtlVlm={day_ntl/1e6:.1f}M | impact≈{spread_pct:.2f}%\n"
@@ -443,6 +420,7 @@ def scan_and_notify():
             msg += (
                 f"{emoji} {signal} — {coin}\n"
                 f"Regime: {regime}\n"
+                f"Momentum phase: {phase}\n"
                 f"ADX: {adx:.1f} | RSI: {rsi:.1f} | ATR%: {atrp:.2f} | Score: {score:.1f}\n"
                 f"Liquidity: dayNtlVlm={day_ntl/1e6:.1f}M | impact≈{spread_pct:.2f}%\n"
                 f"{hint}\n"
@@ -466,7 +444,6 @@ def telegram_webhook():
     msg = data.get("message") or {}
     text = (msg.get("text") or "").strip().lower()
 
-    # Commands
     if text == "zoek":
         threading.Thread(target=scan_and_notify, daemon=True).start()
         return "ok"
