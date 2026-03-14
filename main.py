@@ -112,46 +112,45 @@ def send_telegram_message(msg: str) -> None:
 # =========================
 def tv_link_for_coin(coin: str) -> str:
     """
-    Genereer een TradingView-link voor een coin/asset.
-    Werkt voor standaard crypto en voor afwijkende tickers zoals kBONK of PUMP.
+    Genereer een werkende TradingView-link voor elk coin/asset.
+    Werkt ook voor niet-standaard tickers zoals kBONK, PUMP, enz.
     Strategie:
-    1️⃣ Query TradingView symbol search.
-       - Als chartId beschikbaar: gebruik directe chart-link.
-       - Anders: gebruik het symbol uit JSON.
-    2️⃣ Fallback: zoekpagina.
+    1️⃣ Probeer TradingView symbol search voor directe chartId.
+    2️⃣ Zo niet, fallback naar BINANCE:COINUSDT of andere exchange.
+    3️⃣ Als alles faalt, fallback naar zoekpagina.
     """
     coin_upper = coin.upper().replace("CRYPTO:", "").strip()
     if coin_upper in _tv_cache:
         return _tv_cache[coin_upper]
 
     try:
-        r = requests.get(
-            f"https://symbol-search.tradingview.com/symbol_search/?text={coin_upper}&limit=1",
-            timeout=3
-        )
-        if r.status_code == 200:
-            data = r.json()
-            if len(data) > 0:
-                first = data[0]
-                chart_id = first.get("chartId")
-                symbol = first.get("symbol") or coin_upper
+        url = f"https://symbol-search.tradingview.com/symbol_search/?text={coin_upper}&limit=5"
+        r = requests.get(url, timeout=3)
+        r.raise_for_status()
+        data = r.json()
 
+        # zoek eerste crypto asset
+        for entry in data:
+            if entry.get("type") == "crypto":
+                symbol = entry.get("symbol")
+                chart_id = entry.get("chartId")
                 if chart_id:
-                    # directe chart link via chartId
                     link = f"https://www.tradingview.com/chart/{chart_id}/?symbol={symbol.replace(':','%3A')}"
                 else:
-                    # fallback: gebruik TradingView symbol
                     link = f"https://www.tradingview.com/chart/?symbol={symbol.replace(':','%3A')}"
-                
                 _tv_cache[coin_upper] = link
                 return link
-    except Exception:
-        pass
 
-    # fallback → zoekpagina als alles faalt
-    fallback_link = f"https://www.tradingview.com/symbols/?search={coin_upper}"
-    _tv_cache[coin_upper] = fallback_link
-    return fallback_link
+        # fallback: probeer handmatig exchange (BINANCE)
+        link = f"https://www.tradingview.com/chart/?symbol=BINANCE:{coin_upper}USDT"
+        _tv_cache[coin_upper] = link
+        return link
+
+    except Exception:
+        # fallback naar zoekpagina
+        fallback = f"https://www.tradingview.com/symbols/?search={coin_upper}"
+        _tv_cache[coin_upper] = fallback
+        return fallback
 
 def regime_from_adx(adx: float) -> str:
     if adx > ADX_TREND_THR:
