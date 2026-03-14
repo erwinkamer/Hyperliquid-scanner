@@ -1,7 +1,6 @@
-
 # main.py — Hyperliquid 1H scanner -> Telegram shortlist -> TradingView (manual trading)
 # Upgrades: Momentum phase + momentum candle scoring
-# All other logic unchanged.
+# Full code, no shortcuts.
 
 import os
 import time
@@ -53,7 +52,7 @@ META_TTL_SEC = int(os.getenv("META_TTL_SEC", "60"))
 TV_PREFIX = os.getenv("TV_PREFIX", "https://www.tradingview.com/chart/?symbol=CRYPTO:")
 
 # =========================
-# HL RATE LIMIT
+# RATE LIMITER
 # =========================
 @dataclass
 class RateLimiter:
@@ -261,9 +260,17 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     atrp = float(last["ATRp_14"])
     close = float(last["close"])
 
-    # --- ATR VOLATILITY FILTER (Hyperliquid optimization) ---
+    # ATR VOLATILITY FILTER
     if atrp < 0.7 or atrp > 6.0:
         return None
+
+    if len(df) < 2:
+        adx_prev = adx
+        rsi_prev = rsi
+    else:
+        adx_prev = df.iloc[-2]["ADX_14"]
+        rsi_prev = df.iloc[-2]["RSI_14"]
+    adx_slope = adx - adx_prev
 
     adx_strong = adx > ADX_TREND_THR
     adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX and adx_slope > 0
@@ -288,34 +295,21 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     if not signal:
         return None
 
-    # --- MOMENTUM CANDLE & PHASE ---
-    if len(df) < 2:  # als er minder dan 2 candles zijn
-        adx_prev = adx
-        rsi_prev = rsi
-    else:
-        adx_prev = df.iloc[-2]["ADX_14"]
-        rsi_prev = df.iloc[-2]["RSI_14"]
-    adx_slope = adx - adx_prev
-    rsi_slope = rsi - rsi_prev
+    # MOMENTUM CANDLE & PHASE
     ema_sep = abs(last["EMA_9"] - last["EMA_21"]) / close
-
     body = abs(last["close"] - last["open"])
     avg_body = (df["close"] - df["open"]).abs().tail(10).mean()
     range_size = last["high"] - last["low"]
-    avg_range = (df["high"] - df["low"]).tail(10).mean() 
-
+    avg_range = (df["high"] - df["low"]).tail(10).mean()
     momentum_candle = body > avg_body * 1.2 and range_size > avg_range * 1.1
-    
-    # Momentum phase
-    phase = "MID" 
 
-    if adx > 25 and adx_slope > 0 and ema_sep < 0.012: 
-        phase = "EARLY" 
-
-    elif adx > 35 and (rsi > 70 or rsi < 30 or ema_sep > 0.025): 
+    phase = "MID"
+    if adx > 25 and adx_slope > 0 and ema_sep < 0.012:
+        phase = "EARLY"
+    elif adx > 35 and (rsi > 70 or rsi < 30 or ema_sep > 0.025):
         phase = "LATE"
 
-    # Ranking score
+    # RANKING SCORE
     if "LONG" in signal:
         rsi_dist = max(0.0, rsi - 50.0)
     else:
@@ -323,31 +317,27 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
 
     pre_penalty = -2.0 if "PRE" in signal else 0.0
     score = float((adx * 1.0) + (rsi_dist * 0.6) + (ema_sep * 500.0) + pre_penalty)
-
-    if momentum_candle:
-        score += 2.5
-    if phase == "EARLY":
-        score += 3
-    if phase == "LATE":
-        score -= 4
+    if momentum_candle: score += 2.5
+    if phase == "EARLY": score += 3
+    if phase == "LATE": score -= 4
 
     return (signal, adx, rsi, atrp, score, phase)
 
+# =========================
+# SIZE HINT
+# =========================
 def size_hint(score: float) -> str:
-    if score >= 40:
-        return "Setup: A (normale size)"
-    if score >= 34:
-        return "Setup: B (kleiner)"
+    if score >= 40: return "Setup: A (normale size)"
+    if score >= 34: return "Setup: B (kleiner)"
     return "Setup: C (heel klein / alleen als chart perfect is)"
 
 # =========================
-# SCAN
+# SCAN & NOTIFY
 # =========================
 _last_scan_ts = 0.0
 
 def scan_and_notify():
     global _last_scan_ts
-
     now = time.time()
     if now - _last_scan_ts < MIN_SECONDS_BETWEEN_SCANS:
         send_telegram_message(f"⏳ Even wachten: scan cooldown ({MIN_SECONDS_BETWEEN_SCANS}s).")
@@ -355,24 +345,20 @@ def scan_and_notify():
     _last_scan_ts = now
 
     t0 = time.time()
-    top = select_topn_filtered(TOP_N)
-    if not top:
+    top_coins = select_topn_filtered(TOP_N)
+    if not top_coins:
         send_telegram_message("❌ Geen coins gevonden (filters te streng of API issue).")
         return
 
-    found = []
-    scanned = 0
-    no_data = 0
-    no_signal = 0
+    found, scanned, no_data, no_signal = [], 0, 0, 0
 
-    for coin, activity_score, day_ntl, spread_pct in top:
+    for coin, activity_score, day_ntl, spread_pct in top_coins:
         scanned += 1
         try:
             df = get_ohlcv(coin, LOOKBACK)
         except Exception:
             no_data += 1
             continue
-
         if df is None or df.empty:
             no_data += 1
             continue
@@ -405,34 +391,21 @@ def scan_and_notify():
     topk = found[:MAX_RESULTS_IN_TELEGRAM]
 
     msg = "📊 Beste kansen (1H) — Hyperliquid\nKlik link → check chart (manual)\n\n"
-
     for coin, signal, adx, rsi, atrp, score, regime, phase, day_ntl, spread_pct in topk:
         tv = tv_link_for_coin(coin)
         hint = size_hint(score)
-
-        if "PRE" in signal:
-            msg += (
-                f"🟡 ⚠️ PRE — {coin}\n"
-                f"Regime: {regime}\n"
-                f"Momentum phase: {phase}\n"
-                f"ADX: {adx:.1f} | RSI: {rsi:.1f} | ATR%: {atrp:.2f} | Score: {score:.1f}\n"
-                f"Dit is een VOOR-signaal (kijken, niet blind traden)\n"
-                f"Liquidity: dayNtlVlm={day_ntl/1e6:.1f}M | impact≈{spread_pct:.2f}%\n"
-                f"{hint}\n"
-                f"Open chart:\n{tv}\n\n"
-            )
-        else:
-            emoji = "🟢" if signal == "LONG" else "🔴"
-            msg += (
-                f"{emoji} {signal} — {coin}\n"
-                f"Regime: {regime}\n"
-                f"Momentum phase: {phase}\n"
-                f"ADX: {adx:.1f} | RSI: {rsi:.1f} | ATR%: {atrp:.2f} | Score: {score:.1f}\n"
-                f"Liquidity: dayNtlVlm={day_ntl/1e6:.1f}M | impact≈{spread_pct:.2f}%\n"
-                f"{hint}\n"
-                f"Open chart:\n{tv}\n\n"
-            )
-
+        emoji = "🟢" if signal == "LONG" else "🔴" if signal == "SHORT" else "🟡 ⚠️"
+        pre_text = "Dit is een VOOR-signaal (kijken, niet blind traden)\n" if "PRE" in signal else ""
+        msg += (
+            f"{emoji} {signal} — {coin}\n"
+            f"Regime: {regime}\n"
+            f"Momentum phase: {phase}\n"
+            f"ADX: {adx:.1f} | RSI: {rsi:.1f} | ATR%: {atrp:.2f} | Score: {score:.1f}\n"
+            f"{pre_text}"
+            f"Liquidity: dayNtlVlm={day_ntl/1e6:.1f}M | impact≈{spread_pct:.2f}%\n"
+            f"{hint}\n"
+            f"Open chart:\n{tv}\n\n"
+        )
     send_telegram_message(msg)
 
 # =========================
@@ -447,8 +420,7 @@ def health():
 @app.route(f"/{WEBHOOK_SECRET}", methods=["POST"])
 def telegram_webhook():
     data = request.get_json(silent=True) or {}
-    msg = data.get("message") or {}
-    text = (msg.get("text") or "").strip().lower()
+    text = (data.get("message", {}).get("text") or "").strip().lower()
 
     if text == "zoek":
         threading.Thread(target=scan_and_notify, daemon=True).start()
@@ -464,5 +436,8 @@ def telegram_webhook():
 
     return "ok"
 
+# =========================
+# MAIN
+# =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
