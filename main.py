@@ -113,7 +113,7 @@ def send_telegram_message(msg: str) -> None:
 def tv_link_for_coin(coin: str) -> str:
     """
     Genereer TradingView-link voor elke asset:
-    - Crypto → TV_PREFIX + USD
+    - Crypto → CRYPTO:<COIN>USD
     - Anders → probeer direct chart, anders search-pagina
     """
     if coin in _tv_cache:
@@ -121,21 +121,20 @@ def tv_link_for_coin(coin: str) -> str:
 
     coin_clean = coin.upper().replace("CRYPTO:", "").strip()
 
-    # Crypto-symbool check: kort en alleen letters/nummers
-    if coin_clean.isalnum() and 2 <= len(coin_clean) <= 5:
-        link = f"{TV_PREFIX}{coin_clean}USD"
+    # Bouw het TradingView symbol
+    tv_symbol = f"CRYPTO:{coin_clean}USD"
+    link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
+
+    # Controleer of het symbol bestaat
+    if tradingview_symbol_exists(tv_symbol):
         _tv_cache[coin] = link
         return link
 
-    # Probeer direct chart, anders search-pagina
-    direct_link = f"https://www.tradingview.com/chart/?symbol={coin_clean}"
-    if tradingview_symbol_exists(coin_clean):
-        _tv_cache[coin] = direct_link
-        return direct_link
-
+    # Fallback: zoekpagina
     fallback_link = f"https://www.tradingview.com/symbols/?search={coin_clean}"
     _tv_cache[coin] = fallback_link
     return fallback_link
+
 
 def tradingview_symbol_exists(tv_symbol: str) -> bool:
     """
