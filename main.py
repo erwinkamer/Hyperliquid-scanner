@@ -33,7 +33,7 @@ HEADERS = {"Content-Type": "application/json"}
 
 INTERVAL = os.getenv("CANDLE_INTERVAL", "1h")
 LOOKBACK = int(os.getenv("SIGNAL_LOOKBACK", "70"))
-TOP_N = int(os.getenv("TOP_N", "60"))
+TOP_N = int(os.getenv("TOP_N", "120"))
 MAX_RESULTS_IN_TELEGRAM = int(os.getenv("TOP_K_TELEGRAM", "10"))
 
 MIN_DAY_NTL_VLM = float(os.getenv("MIN_DAY_NTL_VLM", "1000000"))
