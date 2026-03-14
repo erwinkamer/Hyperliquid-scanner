@@ -266,8 +266,7 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
         return None
 
     adx_strong = adx > ADX_TREND_THR
-    adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX    adx_strong = adx > ADX_TREND_THR
-        adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX
+    adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX
 
     rsi_long = rsi > 55
     rsi_short = rsi < 45
@@ -319,7 +318,7 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
         rsi_dist = max(0.0, 50.0 - rsi)
 
     pre_penalty = -2.0 if "PRE" in signal else 0.0
-    score = float((adx * 1.0) + (rsi_dist * 0.6) + (ema_sep * 500.0) + (atr_bonus * 3.0) + pre_penalty)
+    score = float((adx * 1.0) + (rsi_dist * 0.6) + (ema_sep * 500.0) + pre_penalty)
 
     if momentum_candle:
         score += 2.5
