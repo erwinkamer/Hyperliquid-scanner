@@ -1,3 +1,4 @@
+
 # main.py — Hyperliquid 1H scanner -> Telegram shortlist -> TradingView (manual trading)
 # Upgrades: Momentum phase + momentum candle scoring
 # All other logic unchanged.
@@ -260,8 +261,13 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     atrp = float(last["ATRp_14"])
     close = float(last["close"])
 
+    # --- ATR VOLATILITY FILTER (Hyperliquid optimization) ---
+    if atrp < 0.7 or atrp > 6.0:
+        return None
+
     adx_strong = adx > ADX_TREND_THR
-    adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX
+    adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX    adx_strong = adx > ADX_TREND_THR
+        adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX
 
     rsi_long = rsi > 55
     rsi_short = rsi < 45
@@ -292,13 +298,18 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
 
     body = abs(last["close"] - last["open"])
     avg_body = (df["close"] - df["open"]).abs().tail(10).mean()
-    momentum_candle = body > avg_body * 1.2
+    range_size = last["high"] - last["low"]
+    avg_range = (df["high"] - df["low"]).tail(10).mean() 
 
+    momentum_candle = body > avg_body * 1.2 and range_size > avg_range * 1.1
+    
     # Momentum phase
-    phase = "MID"
-    if adx_slope > 0 and ema_sep < 0.012:
-        phase = "EARLY"
-    elif adx_slope < 0 or ema_sep > 0.02 or rsi > 70 or rsi < 30:
+    phase = "MID" 
+
+    if adx > 25 and adx_slope > 0 and ema_sep < 0.012: 
+        phase = "EARLY" 
+
+    elif adx > 35 and (rsi > 70 or rsi < 30 or ema_sep > 0.025): 
         phase = "LATE"
 
     # Ranking score
@@ -306,14 +317,6 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
         rsi_dist = max(0.0, rsi - 50.0)
     else:
         rsi_dist = max(0.0, 50.0 - rsi)
-
-    atr_bonus = 0.0
-    if 0.8 <= atrp <= 3.5:
-        atr_bonus = 1.0
-    elif atrp < 0.5:
-        atr_bonus = -1.0
-    elif atrp > 6.0:
-        atr_bonus = -0.5
 
     pre_penalty = -2.0 if "PRE" in signal else 0.0
     score = float((adx * 1.0) + (rsi_dist * 0.6) + (ema_sep * 500.0) + (atr_bonus * 3.0) + pre_penalty)
