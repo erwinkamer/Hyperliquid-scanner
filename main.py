@@ -149,23 +149,24 @@ def get_meta_and_ctxs_cached() -> Any:
     return data
 
 def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
-    # Haal alle beschikbare perp-DEXes op (eerste element null => default DEX)
+    """
+    Haalt de TOP_N beste crypto perpetual contracts op van alle beschikbare DEXes.
+    Alleen crypto assets worden meegenomen (filter op asset type of prefix).
+    """
     try:
         dexs_res = hl_info({"type": "perpDexs"}, weight=weight_info_default())
     except Exception:
         dexs_res = []
-    dex_list = []
-    if isinstance(dexs_res, list) and len(dexs_res) > 0:
-        dex_list.append("")  # default DEX (lege string)
+        
+    dex_list = [""]
+    if isinstance(dexs_res, list) and len(dexs_res) > 1:
         for entry in dexs_res[1:]:
             if isinstance(entry, dict) and "name" in entry:
                 dex_list.append(entry["name"])
-    if not dex_list:
-        dex_list = [""]
-
+    
     rows: List[Tuple[str, float, float, float]] = []
     seen_coins = set()
-    # Loop over elke DEX (inclusief default)
+    
     for dex in dex_list:
         payload = {"type": "metaAndAssetCtxs"}
         if dex:
@@ -176,29 +177,41 @@ def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
             continue
         if not (isinstance(res, list) and len(res) >= 2):
             continue
+
         meta = res[0] if isinstance(res[0], dict) else {}
         ctxs = res[1] if isinstance(res[1], list) else []
         universe = meta.get("universe", []) if isinstance(meta, dict) else []
+
         for i, asset in enumerate(universe):
             if not isinstance(asset, dict):
                 continue
+            
+            # Filter: enkel crypto
+            asset_type = asset.get("type", "").upper()  # of asset.get("assetType", "").upper()
             coin = asset.get("name")
             if not coin or coin in seen_coins:
                 continue
+            if asset_type != "CRYPTO" and not coin.startswith("CRYPTO:"):
+                continue  # skip niet-crypto
+
             seen_coins.add(coin)
+
             c = ctxs[i] if i < len(ctxs) else {}
             day_ntl = safe_float(c.get("dayNtlVlm", 0.0), 0.0)
             if day_ntl < MIN_DAY_NTL_VLM:
                 continue
+
             mid = safe_float(c.get("midPx", 0.0), 0.0)
             impact = c.get("impactPxs") or [None, None]
-            buy_imp = safe_float(impact[0], mid) if len(impact)>0 else mid
-            sell_imp = safe_float(impact[1], mid) if len(impact)>1 else mid
+            buy_imp = safe_float(impact[0], mid) if len(impact) > 0 else mid
+            sell_imp = safe_float(impact[1], mid) if len(impact) > 1 else mid
             spread_pct = (abs(sell_imp - buy_imp) / mid * 100.0) if mid > 0 else 999.0
             if spread_pct > MAX_IMPACT_SPREAD_PCT:
                 continue
+
             score = math.log1p(day_ntl) / (1.0 + 0.6 * spread_pct)
             rows.append((coin, score, day_ntl, spread_pct))
+    
     rows.sort(key=lambda x: x[1], reverse=True)
     return rows[:top_n]
 
