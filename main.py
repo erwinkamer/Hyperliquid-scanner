@@ -149,42 +149,56 @@ def get_meta_and_ctxs_cached() -> Any:
     return data
 
 def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
-    res = get_meta_and_ctxs_cached()
-    if not (isinstance(res, list) and len(res) >= 2):
-        return []
+    # Haal alle beschikbare perp-DEXes op (eerste element null => default DEX)
+    try:
+        dexs_res = hl_info({"type": "perpDexs"}, weight=weight_info_default())
+    except Exception:
+        dexs_res = []
+    dex_list = []
+    if isinstance(dexs_res, list) and len(dexs_res) > 0:
+        dex_list.append("")  # default DEX (lege string)
+        for entry in dexs_res[1:]:
+            if isinstance(entry, dict) and "name" in entry:
+                dex_list.append(entry["name"])
+    if not dex_list:
+        dex_list = [""]
 
-    meta = res[0] if isinstance(res[0], dict) else {}
-    ctxs = res[1] if isinstance(res[1], list) else []
-
-    universe = meta.get("universe", []) if isinstance(meta, dict) else []
-    rows = []
-
-    for i, u in enumerate(universe):
-        if not isinstance(u, dict):
+    rows: List[Tuple[str, float, float, float]] = []
+    seen_coins = set()
+    # Loop over elke DEX (inclusief default)
+    for dex in dex_list:
+        payload = {"type": "metaAndAssetCtxs"}
+        if dex:
+            payload["dex"] = dex
+        try:
+            res = hl_info(payload, weight=weight_info_default())
+        except Exception:
             continue
-        coin = u.get("name")
-        if not coin:
+        if not (isinstance(res, list) and len(res) >= 2):
             continue
-
-        c = ctxs[i] if i < len(ctxs) and isinstance(ctxs[i], dict) else {}
-        day_ntl = safe_float(c.get("dayNtlVlm", 0.0), 0.0)
-        mid = safe_float(c.get("midPx", 0.0), 0.0)
-        impact = c.get("impactPxs") or [None, None]
-
-        spread_pct = 999.0
-        if mid > 0 and isinstance(impact, list) and len(impact) == 2 and impact[0] and impact[1]:
-            buy_imp = safe_float(impact[0], mid)
-            sell_imp = safe_float(impact[1], mid)
-            spread_pct = abs(sell_imp - buy_imp) / mid * 100.0
-
-        if day_ntl < MIN_DAY_NTL_VLM:
-            continue
-        if spread_pct > MAX_IMPACT_SPREAD_PCT:
-            continue
-
-        activity_score = math.log1p(day_ntl) / (1.0 + 0.6 * spread_pct)
-        rows.append((coin, activity_score, day_ntl, spread_pct))
-
+        meta = res[0] if isinstance(res[0], dict) else {}
+        ctxs = res[1] if isinstance(res[1], list) else []
+        universe = meta.get("universe", []) if isinstance(meta, dict) else []
+        for i, asset in enumerate(universe):
+            if not isinstance(asset, dict):
+                continue
+            coin = asset.get("name")
+            if not coin or coin in seen_coins:
+                continue
+            seen_coins.add(coin)
+            c = ctxs[i] if i < len(ctxs) else {}
+            day_ntl = safe_float(c.get("dayNtlVlm", 0.0), 0.0)
+            if day_ntl < MIN_DAY_NTL_VLM:
+                continue
+            mid = safe_float(c.get("midPx", 0.0), 0.0)
+            impact = c.get("impactPxs") or [None, None]
+            buy_imp = safe_float(impact[0], mid) if len(impact)>0 else mid
+            sell_imp = safe_float(impact[1], mid) if len(impact)>1 else mid
+            spread_pct = (abs(sell_imp - buy_imp) / mid * 100.0) if mid > 0 else 999.0
+            if spread_pct > MAX_IMPACT_SPREAD_PCT:
+                continue
+            score = math.log1p(day_ntl) / (1.0 + 0.6 * spread_pct)
+            rows.append((coin, score, day_ntl, spread_pct))
     rows.sort(key=lambda x: x[1], reverse=True)
     return rows[:top_n]
 
