@@ -148,10 +148,6 @@ def get_meta_and_ctxs_cached() -> Any:
     _meta_cache["data"] = data
     return data
 
-def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
-from typing import List, Tuple
-import math
-
 def select_topn_crypto_perps(top_n: int) -> List[Tuple[str, float, float, float]]:
     """
     Haalt de TOP_N beste crypto perpetual contracts op uit de volledige Hyperliquid universe.
@@ -414,7 +410,7 @@ def scan_and_notify():
     _last_scan_ts = now
 
     t0 = time.time()
-    top_coins = select_topn_filtered(TOP_N)
+    top_coins = select_topn_crypto_perps(TOP_N)
     if not top_coins:
         send_telegram_message("❌ Geen coins gevonden (filters te streng of API issue).")
         return
