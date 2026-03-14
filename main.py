@@ -14,6 +14,9 @@ import requests
 import pandas as pd
 import ta
 
+# Cache om TradingView-links per coin op te slaan (vermijdt herhaalde HTTP requests)
+_tv_cache: Dict[str, str] = {}
+
 from flask import Flask, request
 from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
@@ -109,19 +112,46 @@ def send_telegram_message(msg: str) -> None:
 # =========================
 def tv_link_for_coin(coin: str) -> str:
     """
-    Geeft de juiste TradingView-link voor een coin of asset.
-    - Crypto (alfanumeriek, meestal 2-5 letters) → TV_PREFIX + USD
-    - Commodities, indices of andere symbolen → direct via hun symbol
+    Genereer TradingView-link voor elke asset:
+    - Crypto → TV_PREFIX + USD
+    - Anders → probeer direct chart, anders search-pagina
     """
+    if coin in _tv_cache:
+        return _tv_cache[coin]
+
     coin_clean = coin.upper().replace("CRYPTO:", "").strip()
 
     # Crypto-symbool check: kort en alleen letters/nummers
     if coin_clean.isalnum() and 2 <= len(coin_clean) <= 5:
-        return f"{TV_PREFIX}{coin_clean}USD"
-    
-    # Anders: commodity, index, etc.
-    # Sommige assets hebben speciale TradingView-prefixes, maar dit opent het algemene chart
-    return f"https://www.tradingview.com/chart/?symbol={coin_clean}"
+        link = f"{TV_PREFIX}{coin_clean}USD"
+        _tv_cache[coin] = link
+        return link
+
+    # Probeer direct chart, anders search-pagina
+    direct_link = f"https://www.tradingview.com/chart/?symbol={coin_clean}"
+    if tradingview_symbol_exists(coin_clean):
+        _tv_cache[coin] = direct_link
+        return direct_link
+
+    fallback_link = f"https://www.tradingview.com/symbols/?search={coin_clean}"
+    _tv_cache[coin] = fallback_link
+    return fallback_link
+
+def tradingview_symbol_exists(tv_symbol: str) -> bool:
+    """
+    Controleer via TradingView symbol search endpoint of het symbol bestaat
+    """
+    try:
+        r = requests.get(
+            f"https://symbol-search.tradingview.com/symbol_search/?text={tv_symbol}&limit=1",
+            timeout=5
+        )
+        if r.status_code == 200:
+            data = r.json()
+            return len(data) > 0
+    except Exception:
+        pass
+    return False
 
 def regime_from_adx(adx: float) -> str:
     if adx > ADX_TREND_THR:
