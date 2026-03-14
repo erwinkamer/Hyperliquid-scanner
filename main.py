@@ -505,6 +505,3 @@ def telegram_webhook():
 # =========================
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=PORT)
-
-
-Dus nu zou het opgelost moeten zijn en moeten kloppen?
