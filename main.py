@@ -112,25 +112,18 @@ def send_telegram_message(msg: str) -> None:
 # =========================
 def tv_link_for_coin(coin: str) -> str:
     """
-    Genereer TradingView-link voor elk asset:
-    1️⃣ Crypto → CRYPTO:<COIN>USD (werkt meestal)
-    2️⃣ Anders → query TradingView symbol search
-        - Indien chartId beschikbaar → directe chart-link
-        - Anders → ?symbol= exact symbol
-    3️⃣ Fallback → zoekpagina
+    Genereer een TradingView-link voor een coin/asset.
+    Werkt voor standaard crypto en voor afwijkende tickers zoals kBONK of PUMP.
+    Strategie:
+    1️⃣ Query TradingView symbol search.
+       - Als chartId beschikbaar: gebruik directe chart-link.
+       - Anders: gebruik het symbol uit JSON.
+    2️⃣ Fallback: zoekpagina.
     """
     coin_upper = coin.upper().replace("CRYPTO:", "").strip()
     if coin_upper in _tv_cache:
-        return _tv_cache[coin]
+        return _tv_cache[coin_upper]
 
-    # 1️⃣ Bekende crypto mapping (kort alfanumeriek)
-    if coin_upper.isalnum() and 2 <= len(coin_upper) <= 5:
-        tv_symbol = f"CRYPTO:{coin_upper}USD"
-        link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
-        _tv_cache[coin_upper] = link
-        return link
-
-    # 2️⃣ Probeer TradingView symbol search
     try:
         r = requests.get(
             f"https://symbol-search.tradingview.com/symbol_search/?text={coin_upper}&limit=1",
@@ -139,20 +132,23 @@ def tv_link_for_coin(coin: str) -> str:
         if r.status_code == 200:
             data = r.json()
             if len(data) > 0:
-                tv_symbol = data[0].get("symbol", coin_upper)
-                chart_id = data[0].get("chartId")  # kan None zijn
+                first = data[0]
+                chart_id = first.get("chartId")
+                symbol = first.get("symbol") or coin_upper
+
                 if chart_id:
-                    # exacte chart link met ID
-                    link = f"https://www.tradingview.com/chart/{chart_id}/?symbol={tv_symbol.replace(':','%3A')}"
+                    # directe chart link via chartId
+                    link = f"https://www.tradingview.com/chart/{chart_id}/?symbol={symbol.replace(':','%3A')}"
                 else:
-                    # fallback: ?symbol
-                    link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
+                    # fallback: gebruik TradingView symbol
+                    link = f"https://www.tradingview.com/chart/?symbol={symbol.replace(':','%3A')}"
+                
                 _tv_cache[coin_upper] = link
                 return link
     except Exception:
         pass
 
-    # 3️⃣ Fallback → zoekpagina
+    # fallback → zoekpagina als alles faalt
     fallback_link = f"https://www.tradingview.com/symbols/?search={coin_upper}"
     _tv_cache[coin_upper] = fallback_link
     return fallback_link
