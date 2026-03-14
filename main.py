@@ -114,23 +114,41 @@ def tv_link_for_coin(coin: str) -> str:
     """
     Genereer TradingView-link voor elk asset:
     - Crypto → CRYPTO:<COIN>USD (werkt vrijwel altijd)
-    - Anders → probeer direct chart, anders search fallback
+    - Anders → probeer direct chart; indien niet bestaand → zoekpagina
     """
     if coin in _tv_cache:
         return _tv_cache[coin]
 
     coin_clean = coin.upper().replace("CRYPTO:", "").strip()
 
-    # Crypto-symbool check: korte alfanumerieke naam
+    # 1️⃣ Crypto check: korte alfanumerieke naam
     if coin_clean.isalnum() and 2 <= len(coin_clean) <= 5:
-        link = f"https://www.tradingview.com/chart/?symbol=CRYPTO:{coin_clean}USD"
+        tv_symbol = f"CRYPTO:{coin_clean}USD"
+        link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
         _tv_cache[coin] = link
         return link
 
-    # Anders, probeer direct chart
-    link = f"https://www.tradingview.com/chart/?symbol={coin_clean}"
-    _tv_cache[coin] = link
-    return link
+    # 2️⃣ Probeer direct chart voor andere assets
+    tv_symbol = coin_clean
+    link = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
+
+    try:
+        r = requests.get(
+            f"https://symbol-search.tradingview.com/symbol_search/?text={tv_symbol}&limit=1",
+            timeout=3
+        )
+        if r.status_code == 200:
+            data = r.json()
+            if len(data) > 0:
+                _tv_cache[coin] = link
+                return link
+    except Exception:
+        pass
+
+    # 3️⃣ Fallback → zoekpagina
+    fallback_link = f"https://www.tradingview.com/symbols/?search={coin_clean}"
+    _tv_cache[coin] = fallback_link
+    return fallback_link
 
 def regime_from_adx(adx: float) -> str:
     if adx > ADX_TREND_THR:
