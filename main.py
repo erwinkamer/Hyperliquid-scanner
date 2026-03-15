@@ -249,7 +249,7 @@ def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
     if not dex_list:
         dex_list = [""]
 
-    rows: List[Tuple[str, float, float, float]] = []
+    rows: List[Tuple[str, float, float]] = []
     seen_coins = set()
     # Loop over elke DEX (inclusief default)
     for dex in dex_list:
@@ -283,10 +283,24 @@ def select_topn_filtered(top_n: int) -> List[Tuple[str, float, float, float]]:
             spread_pct = (abs(sell_imp - buy_imp) / mid * 100.0) if mid > 0 else 999.0
             if spread_pct > MAX_IMPACT_SPREAD_PCT:
                 continue
-            score = math.log1p(day_ntl) / (1.0 + 0.6 * spread_pct)
-            rows.append((coin, score, day_ntl, spread_pct))
-    rows.sort(key=lambda x: x[1], reverse=True)
-    return rows[:top_n]
+            rows.append((coin, day_ntl, spread_pct))
+
+    # ---------- percentile ranking ----------
+    if not rows:
+        return []
+
+    df = pd.DataFrame(rows, columns=["coin", "ntl", "spread"])
+
+    df = df.drop_duplicates(subset="coin")
+    
+    df["ntl_rank"] = df["ntl"].rank(method="average", pct=True)
+    df["spread_rank"] = 1 - df["spread"].rank(method="average", pct=True)
+
+    df["score"] = df["ntl_rank"] + df["spread_rank"]
+
+    df = df.sort_values("score", ascending=False)
+
+    return list(df[["coin", "score", "ntl", "spread"]].itertuples(index=False, name=None))[:top_n]
 
 # =========================
 # CANDLES
@@ -343,6 +357,7 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
 
     df["EMA_9"] = ta.trend.ema_indicator(df["close"], window=9)
     df["EMA_21"] = ta.trend.ema_indicator(df["close"], window=21)
+    df["EMA21_SLOPE"] = df["EMA_21"].diff()
     df["RSI_14"] = ta.momentum.rsi(df["close"], window=14)
     df["ADX_14"] = ta.trend.ADXIndicator(df["high"], df["low"], df["close"], window=14).adx()
     df["ATR_14"] = ta.volatility.average_true_range(df["high"], df["low"], df["close"], window=14)
@@ -357,8 +372,8 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     if any(pd.isna(last[k]) for k in ["EMA_9", "EMA_21", "RSI_14", "ADX_14", "ATRp_14"]):
         return None
 
-    ema_bull = last["EMA_9"] > last["EMA_21"]
-    ema_bear = last["EMA_9"] < last["EMA_21"]
+    ema_bull = last["EMA_9"] > last["EMA_21"] and last["EMA21_SLOPE"] > 0
+    ema_bear = last["EMA_9"] < last["EMA_21"] and last["EMA21_SLOPE"] < 0
 
     rsi = float(last["RSI_14"])
     adx = float(last["ADX_14"])
@@ -373,12 +388,6 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     rsi_prev = float(prev["RSI_14"])
 
     adx_slope = adx - adx_prev
-    rsi_slope = rsi - rsi_prev
-
-    # NEW: allow small RSI pullbacks
-    if rsi_slope < -0.2:
-        return None
-
     adx_strong = adx > ADX_TREND_THR
     adx_rising = ADX_PRE_MIN <= adx <= ADX_PRE_MAX and adx_slope > 0
 
@@ -414,7 +423,12 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     range_size = last["high"] - last["low"]
     avg_range = (df["high"] - df["low"]).tail(10).mean()
 
-    momentum_candle = body > avg_body * 1.2 and range_size > avg_range * 1.1
+    prev_body = abs(prev["close"] - prev["open"])
+
+    momentum_candle = (
+        body > avg_body * 1.2
+        and prev_body > avg_body * 0.9
+    )
 
     candle_range = last["high"] - last["low"]
 
@@ -448,7 +462,16 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     pre_penalty = -2.0 if "PRE" in signal else 0.0
 
     # ADX weight slightly reduced
-    score = float((adx * 0.8) + (rsi_dist * 0.6) + (ema_sep * 500.0) + pre_penalty)
+    score = (
+        adx
+        + rsi_dist
+        + (ema_sep_norm * 6)
+        + pre_penalty
+    )
+
+    # trend acceleration bonus (geen harde filter)gaat t
+    if ema_sep_slope > 0:
+        score += 1.5
 
     if momentum_candle:
         score += 2.5
@@ -465,12 +488,7 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
 
     if vol_ma > 0:
         vol_ratio = vol / vol_ma
-
-        if vol_ratio > 1.8:
-            score += 2.5
-        elif vol_ratio > 1.4:
-            score += 1.2
-
+        score += min(vol_ratio, 2)
     return (signal, adx, rsi, atrp, score, phase)
 
 # =========================
