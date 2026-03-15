@@ -469,7 +469,8 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
         + pre_penalty
     )
 
-    # trend acceleration bonus (geen harde filter)gaat t
+    # trend acceleration bonus (optioneel)
+    ema_sep_slope = df["EMA_9"].iloc[-1] - df["EMA_9"].iloc[-2]  # verschil van laatste 2 EMA9 bars
     if ema_sep_slope > 0:
         score += 1.5
 
@@ -531,7 +532,13 @@ def scan_and_notify():
             no_data += 1
             continue
 
-        res = check_signals(df)
+        try:
+            res = check_signals(df)
+        except Exception as e:
+            print(f"check_signals error for {coin}: {e}")
+            no_signal += 1
+            continue
+
         if not res:
             no_signal += 1
             continue
