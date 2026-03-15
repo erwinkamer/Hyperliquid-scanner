@@ -46,8 +46,8 @@ FILTER_CHOP_ENTRIES = os.getenv("FILTER_CHOP_ENTRIES", "1").strip() == "1"
 ADX_TREND_THR = float(os.getenv("ADX_TREND_THR", "25"))
 ADX_CHOP_THR = float(os.getenv("ADX_CHOP_THR", "20"))
 
-ADX_PRE_MIN = float(os.getenv("ADX_PRE_MIN", "22"))
-ADX_PRE_MAX = float(os.getenv("ADX_PRE_MAX", "25"))
+ADX_PRE_MIN = float(os.getenv("ADX_PRE_MIN", "20"))
+ADX_PRE_MAX = float(os.getenv("ADX_PRE_MAX", "27"))
 
 MIN_SECONDS_BETWEEN_SCANS = int(os.getenv("MIN_SECONDS_BETWEEN_SCANS", "30"))
 META_TTL_SEC = int(os.getenv("META_TTL_SEC", "60"))
@@ -404,7 +404,7 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
         elif ema_bear and rsi_short:
             signal = "SHORT"
 
-    elif adx_rising:
+    elif adx_rising and 0.7 < atrp < 5:
         if ema_bull and rsi_near_long:
             signal = "PRE-LONG"
         elif ema_bear and rsi_near_short:
@@ -447,7 +447,7 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
     # PHASE
     phase = "MID"
 
-    if adx > 25 and adx_slope > 0 and ema_sep_norm < 0.6:
+    if 20 < adx <= 30 and adx_slope > 0 and ema_sep_norm < 0.5 and wick_ratio < 0.7:
         phase = "EARLY"
 
     elif adx > 35 and (rsi > 70 or rsi < 30 or ema_sep_norm > 1.2):
@@ -478,7 +478,7 @@ def check_signals(df: pd.DataFrame) -> Optional[Tuple[str, float, float, float, 
         score += 2.5
 
     if phase == "EARLY":
-        score += 3
+        score += 2
 
     if phase == "LATE":
         score -= 4
